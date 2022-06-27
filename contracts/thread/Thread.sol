@@ -124,7 +124,7 @@ contract Thread is FrabricDAO, IThreadInitializable {
   * @param _descriptor (bytes32) Thread descriptor data
   * @param _frabric (address) Frabric's address
   * @param _governor (address) Governor's address
-  * @param _irremovable (address[]) Irremovable address
+  * @param _irremovable (address[]) Irremovable addresses
   */ 
   function initialize(
     string calldata name,

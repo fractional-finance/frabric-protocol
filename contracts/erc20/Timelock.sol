@@ -14,9 +14,12 @@ import "../common/Composable.sol";
 
 import "../interfaces/erc20/ITimelock.sol";
 
-// Just as the Thread can upgrade to claw back tokens, the Frabric could theoretically
-// upgrade the ThreadDeployer to void its timelock. This non-upgradeable contract
-// enforces it
+/** 
+ * @title Timelock contract
+ * @author Fractional Finance
+ * @notice This contract implements timelock functionality for tokens
+ * @dev Non-upgradable contract to avoid the Frabric upgrading ThreadDeployer, voiding the timelock
+ */
 contract Timelock is Ownable, Composable, ITimelock {
   using SafeERC20 for IERC20;
   using ERC165Checker for address;
@@ -28,11 +31,15 @@ contract Timelock is Ownable, Composable, ITimelock {
   mapping(address => LockStruct) private _locks;
 
   constructor() Composable("Timelock") Ownable() initializer {
+    // Finalized set to true here to prevent upgrades
     __Composable_init("Timelock", true);
     supportsInterface[type(Ownable).interfaceId] = true;
     supportsInterface[type(ITimelock).interfaceId] = true;
   }
 
+  /// @notice Lock token `token` for `months` months, only callable by owner
+  /// @param token Address of token to lock
+  /// @param months Number of months to lock token `token` for
   function lock(address token, uint8 months) external override onlyOwner {
     LockStruct storage _lock = _locks[token];
 
@@ -46,6 +53,8 @@ contract Timelock is Ownable, Composable, ITimelock {
     emit Lock(token, months);
   }
 
+  /// @notice Claim all locked tokens `token` to owner address if time lock has expired
+  /// @param token Address of token to be claimed
   function claim(address token) external override {
     LockStruct storage _lock = _locks[token];
 
@@ -75,9 +84,16 @@ contract Timelock is Ownable, Composable, ITimelock {
     IERC20(token).safeTransfer(owner(), amount);
   }
 
+  /// @notice Get absolute unlock time in seconds for token `token`
+  /// @param token Address of token to be checked
+  /// @return uint64 Absolute unlock time of token `token` in seconds
   function nextLockTime(address token) external view override returns (uint64) {
     return _locks[token].time;
   }
+
+  /// @notice Get remaining lock months for token `token`
+  /// @param token Address of token to be checked
+  /// @return uint8 Months of lock remaining on token `token`
   function remainingMonths(address token) external view override returns (uint8) {
     return _locks[token].months;
   }

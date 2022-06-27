@@ -5,12 +5,13 @@ import { SafeERC20Upgradeable as SafeERC20 } from "@openzeppelin/contracts-upgra
 import { ERC165CheckerUpgradeable as ERC165Checker } from "@openzeppelin/contracts-upgradeable/utils/introspection/ERC165CheckerUpgradeable.sol";
 
 import { ECDSAUpgradeable as ECDSA } from "@openzeppelin/contracts-upgradeable/utils/cryptography/ECDSAUpgradeable.sol";
-
-// Using a draft contract isn't great, as is using EIP712 which is technically still under "Review"
-// EIP712 was created over 4 years ago and has undegone multiple versions since
-// Metamask supports multiple various versions of EIP712 and is committed to maintaing "v3" and "v4" support
-// The only distinction between the two is the support for arrays/structs in structs, which aren't used by these contracts
-// Therefore, this usage is fine, now and in the long-term, as long as one of those two versions is indefinitely supported
+/**
+ * Using a draft contract isn't great, as is using EIP712 which is technically still under "Review"
+ * EIP712 was created over 4 years ago and has undegone multiple versions since
+ * Metamask supports multiple various versions of EIP712 and is committed to maintaing "v3" and "v4" support
+ * The only distinction between the two is the support for arrays/structs in structs, which aren't used by these contracts
+ * Therefore, this usage is fine, now and in the long-term, as long as one of those two versions is indefinitely supported
+ */
 import "@openzeppelin/contracts-upgradeable/utils/cryptography/draft-EIP712Upgradeable.sol";
 
 import "../interfaces/erc20/IIntegratedLimitOrderDEX.sol";
@@ -21,18 +22,27 @@ import "./DAO.sol";
 
 import "../interfaces/dao/IFrabricDAO.sol";
 
-// Implements proposals mutual to both Threads and the Frabric
-// This could be merged directly into DAO, as the Thread and Frabric contracts use this
-// yet DAO is only used by this
-// This offers smaller, more compartamentalized code, and directly integrating the two
-// doesn't actually offer any efficiency benefits. The new structs, the new variables, and
-// the new code are still needed, meaning it really just inlines _completeProposal
+
+/** 
+ * @title FrabricDAO Contract
+ * @author Fractional Finance
+ * @notice This contract implements the IntegratedLimitOrderDex for FrabricERC20
+ * @dev Upgradable contract
+ *
+ * Implements proposals mutual to both Threads and the Frabric
+ * This could be merged directly into DAO, as the Thread and Frabric contracts use this
+ * yet DAO is only used by this
+ * This offers smaller, more compartamentalized code, and directly integrating the two
+ * doesn't actually offer any efficiency benefits. The new structs, the new variables, and
+ * the new code are still needed, meaning it really just inlines _completeProposal
+ */
 abstract contract FrabricDAO is EIP712Upgradeable, DAO, IFrabricDAO {
   using SafeERC20 for IERC20;
   using ERC165Checker for address;
 
+  /// @notice Bit value indicating a proposal is a common proposal
   uint16 constant public override commonProposalBit = 1 << 8;
-
+  /// @notice Maximum percentage fee for removal of a participant
   uint8 public override maxRemovalFee;
 
   struct Upgrade {
@@ -84,17 +94,32 @@ abstract contract FrabricDAO is EIP712Upgradeable, DAO, IFrabricDAO {
     return (pType >> 8) == 1;
   }
 
+  /**
+   * @notice Create a new proposal for a paper (statement agreed upon by the DAO)
+   * @param supermajority True if supermajority required for proposal to pass (binding propsal)
+   * @param info Paper statement to be proposed
+   * @return uint256 Id of created proposal
+   */
   function proposePaper(bool supermajority, bytes32 info) external override returns (uint256) {
     // No dedicated event as the DAO emits type and info
     return _createProposal(uint16(CommonProposalType.Paper) | commonProposalBit, supermajority, info);
   }
 
-  // Allows upgrading itself or any contract owned by itself
-  // Specifying any irrelevant beacon will work yet won't have any impact
-  // Specifying an arbitrary contract would also work if it has functions/
-  // a fallback function which don't error when called
-  // Between human review, function definition requirements, and the lack of privileges bestowed,
-  // this is considered to be appropriately managed
+  /**
+   * @notice Propose a contract upgrade, allows upgrading itself or any contract owned by itself
+   * @param beacon Address of beacon contract facilitating upgrades
+   * @param instance Address of contract instance to be upgraded
+   * @param version Version number
+   * @param code Address of contract containing new code
+   * @param data Data to be passed to new contract [?]
+   * @param info Additional information about proposal
+   * @return id Id of created proposal
+   * @dev Specifying any irrelevant beacon will work yet won't have any impact
+   * Specifying an arbitrary contract would also work if it has functions/
+   * a fallback function which don't error when called
+   * Between human review, function definition requirements, and the lack of privileges bestowed,
+   * this is considered to be appropriately managed
+   */
   function proposeUpgrade(
     address beacon,
     address instance,
@@ -112,26 +137,38 @@ abstract contract FrabricDAO is EIP712Upgradeable, DAO, IFrabricDAO {
       revert UnsupportedInterface(code, type(IComposable).interfaceId);
     }
     bytes32 codeName = IComposable(code).contractName();
-
-    // This check is also performed by the Beacon itself when calling upgrade
-    // It's just optimal to prevent this proposal from ever existing and being pending if it's not valid
-    // Since this doesn't check instance's contractName, it could be setting an implementation of X
-    // on beacon X, yet this is pointless. Because the instance is X, its actual beacon must be X,
-    // and it will never accept this implementation (which isn't even being passed to it)
+    /**
+     * This check is also performed by the Beacon itself when calling upgrade
+     * It's just optimal to prevent this proposal from ever existing and being pending if it's not valid
+     * Since this doesn't check instance's contractName, it could be setting an implementation of X
+     * on beacon X, yet this is pointless. Because the instance is X, its actual beacon must be X,
+     * and it will never accept this implementation (which isn't even being passed to it)
+     */
     if (beaconName != codeName) {
       revert DifferentContract(beaconName, codeName);
     }
 
     id = _createProposal(uint16(CommonProposalType.Upgrade) | commonProposalBit, true, info);
     _upgrades[id] = Upgrade(beacon, instance, code, version, data);
-    // Doesn't index code as parsing the Beacon's logs for its indexed code argument
-    // will return every time a contract upgraded to it
-    // This combination of options should be competent for almost all use cases
-    // The only missing indexing case is when it's proposed to upgrade, yet that never passes/executes
-    // This should be minimally considerable and coverable by outside solutions if truly needed
+    /**
+     * Doesn't index code as parsing the Beacon's logs for its indexed code argument
+     * will return every time a contract upgraded to it
+     * This combination of options should be competent for almost all use cases
+     * The only missing indexing case is when it's proposed to upgrade, yet that never passes/executes
+     * This should be minimally considerable and coverable by outside solutions if truly needed
+     */
     emit UpgradeProposal(id, beacon, instance, version, code, data);
   }
 
+  /**
+   * @notice Create a proposal to mint, transfer, cancel a sell order, auction tokens, or any combination of these
+   * @param token Address of token to be proposed on
+   * @param target Target address for proposed action output
+   * @param price Price of tokens for proposed action
+   * @param amount Quantity of tokens to perform action on
+   * @param info Any extra information
+   * @return id Id of created proposal
+   */
   function proposeTokenAction(
     address token,
     address target,
@@ -181,6 +218,15 @@ abstract contract FrabricDAO is EIP712Upgradeable, DAO, IFrabricDAO {
     emit TokenActionProposal(id, token, target, mint, price, amount);
   }
 
+  /**
+   * @notice Propose removal of `participant`
+   * @param participant Address of participant proposed for removal
+   * @param removalFee Percentage fee to charge `participant` on removal, intended to recover financial damage
+   * @param freezeUntilNonce Time to freeze participant's tokens until, used as a nonce
+   * @param signatures Array of signatures from users voting on this proposal
+   * @param info Any extra information about the proposal
+   * @return id Id of created proposal
+   */
   function proposeParticipantRemoval(
     address participant,
     uint8 removalFee,
@@ -195,15 +241,16 @@ abstract contract FrabricDAO is EIP712Upgradeable, DAO, IFrabricDAO {
     id =  _createProposal(uint16(CommonProposalType.ParticipantRemoval) | commonProposalBit, false, info);
     _removals[id] = Removal(participant, removalFee);
     emit ParticipantRemovalProposal(id, participant, removalFee);
-
-    // If signatures were provided, then the purpose is to freeze this participant's
-    // funds for the duration of the proposal. This will not affect any existing
-    // DEX orders yet will prevent further DEX orders from being placed. This prevents
-    // dumping (which already isn't incentivized as tokens will be put up for auction)
-    // and games of hot potato where they're transferred to friends/associates to
-    // prevent their re-distribution. While they can also buy their own tokens off
-    // the Auction contract (with an alt), this is a step closer to being an optimal
-    // system
+    /**
+     * If signatures were provided, then the purpose is to freeze this participant's
+     * funds for the duration of the proposal. This will not affect any existing
+     * DEX orders yet will prevent further DEX orders from being placed. This prevents
+     * dumping (which already isn't incentivized as tokens will be put up for auction)
+     * and games of hot potato where they're transferred to friends/associates to
+     * prevent their re-distribution. While they can also buy their own tokens off
+     * the Auction contract (with an alt), this is a step closer to being an optimal
+     * system
+     */
 
     // If this is done maliciously, whoever proposed this should be removed themselves
     if (signatures.length != 0) {
@@ -306,14 +353,15 @@ abstract contract FrabricDAO is EIP712Upgradeable, DAO, IFrabricDAO {
             // through the order, yet that may collide with others orders at the same price
             // point, so this isn't actually a viable method
             IIntegratedLimitOrderDEXCore(action.token).sell(action.price, action.amount / 1e18);
-
-          // Technically, TokenAction could not acknowledge Auction
-          // By transferring the tokens to another contract, the Auction can be safely created
-          // This is distinct from the ILO DEX as agreement is needed on what price to list at
-          // The issue is that the subcontract wouldn't know who transferred it tokens,
-          // so it must have an owner for its funds. This means creating a new contract per Frabric/Thread
-          // (or achieving global ERC777 adoptance yet that would be incredibly problematic for several reasons)
-          // The easiest solution is just to write a few lines into this contract to handle it
+          /**
+           * Technically, TokenAction could not acknowledge Auction
+           * By transferring the tokens to another contract, the Auction can be safely created
+           * This is distinct from the ILO DEX as agreement is needed on what price to list at
+           * The issue is that the subcontract wouldn't know who transferred it tokens,
+           * so it must have an owner for its funds. This means creating a new contract per Frabric/Thread
+           * (or achieving global ERC777 adoptance yet that would be incredibly problematic for several reasons)
+           * The easiest solution is just to write a few lines into this contract to handle it
+           */
           } else if (auction) {
             IERC20(action.token).safeIncreaseAllowance(action.target, action.amount);
             IAuctionCore(action.target).list(

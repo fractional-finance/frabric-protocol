@@ -12,20 +12,35 @@ import "../interfaces/erc20/IAuction.sol";
 
 import "../interfaces/erc20/IFrabricERC20.sol";
 
-// FrabricERC20s are tokens with a built in limit order DEX, along with governance and distribution functionality
-// The owner can also mint tokens, with a whitelist enforced unless disabled by owner, defaulting to a parent whitelist
-// Finally, the owner can pause transfers, intended for migrations and dissolutions
+/**
+ * @title FrabricERC20 Contract
+ * @author Fractional Finance
+ * @notice This contract implements the FrabricERC20 system, with a limit order DEX, governance and distribution built in
+ * @dev FrabricERC20 tokens include a built in limit order DEX as well as governance and distribution functionality.
+ * The owner may also mint tokens, with an optional whitelist, defaulting to a parent whitelist.
+ * Owners may pause transfers - this functionality is intended for migrations and dissolutions
+ */
 contract FrabricERC20 is OwnableUpgradeable, PausableUpgradeable, DistributionERC20, FrabricWhitelist, IntegratedLimitOrderDEX, IFrabricERC20Initializable {
   using ERC165Checker for address;
 
   address public override auction;
 
   bool private _burning;
-
+  /// @notice Mapping of user addresses to absolute time in seconds when tokens will be unfrozen
   mapping(address => uint64) public override frozenUntil;
+  /// @notice Mapping of user addresses to their associated removal fee
   mapping(address => uint8) public override removalFee;
   bool private _removal;
 
+  /**
+   * @notice Initialize a new FrabircERC20 contract
+   * @param name Name of new token
+   * @param symbol Symbol of new token
+   * @param supply Total supply of new token
+   * @param parent Address of parent contract
+   * @param tradeToken Address of token used as purchasing token in integrated DEX
+   * @param _auction Address of auction contract for token
+   */
   function initialize(
     string memory name,
     string memory symbol,
@@ -47,10 +62,12 @@ contract FrabricERC20 is OwnableUpgradeable, PausableUpgradeable, DistributionER
     supportsInterface[type(IFreeze).interfaceId] = true;
     supportsInterface[type(IFrabricERC20).interfaceId] = true;
 
-    // Whitelist the initializer
-    // This is the Frabric's deployer/the ThreadDeployer
-    // If the former, they should remove their own whitelisting
-    // If the latter, this is intended behavior
+    /**
+     * Whitelist the initializer.
+     * If this is the Frabric's deployer, they are expected to remove
+     * their own whitelisting.
+     * If this is the ThreadDeployer, this is intended behavior 
+     */
     _whitelist(msg.sender);
 
     // Mint the supply
@@ -64,7 +81,6 @@ contract FrabricERC20 is OwnableUpgradeable, PausableUpgradeable, DistributionER
   /// @custom:oz-upgrades-unsafe-allow constructor
   constructor() Composable("FrabricERC20") initializer {}
 
-  // Redefine ERC20 functions so the DEX can pick them up as overrides and call them
   function _transfer(
     address from,
     address to,
@@ -72,45 +88,59 @@ contract FrabricERC20 is OwnableUpgradeable, PausableUpgradeable, DistributionER
   ) internal override(ERC20Upgradeable, IntegratedLimitOrderDEX) {
     super._transfer(from, to, amount);
   }
+
+  /// @inheritdoc IntegratedLimitOrderDEX
+  /// @dev Redefine ERC20 balanceOf function as an override so the DEX can call it
   function balanceOf(
     address account
   ) public view override(IERC20Upgradeable, ERC20Upgradeable, IntegratedLimitOrderDEX) returns (uint256) {
     return super.balanceOf(account);
   }
+
+  /// @inheritdoc IntegratedLimitOrderDEX
+  /// @dev Redefine ERC20 decimals function as an override so the DEX can call it
   function decimals() public view override(ERC20Upgradeable, IntegratedLimitOrderDEX) returns (uint8) {
     return super.decimals();
   }
 
+  /**
+   * @notice Mint new tokens, only available to owner
+   * @param to Address for newly minted tokens to be credited to
+   * @param amount Amount of new tokens to be minted
+   * @dev Redefine ERC20 mint function as an override so the DEX can call it
+   */
   function mint(address to, uint256 amount) public override onlyOwner {
     _mint(to, amount);
 
-    // Make sure the supply is within bounds
-    // The DAO code sets an upper bound of signed<int>.max
-    // Uniswap and more frequently use uint112 which is a perfectly functional bound
-    // DistributionERC20 optimized into a bound of uint128 and with that push decided
-    // to lock down all the way to uint112
-    // Therefore, this can't exceed uint112. Specifically, it binds to int112
-    // as it's still perfectly functional yet prevents the DAO from needing to use
-    // uint120
+    /**
+     * This check ensures the supply is within the bound of signed<int>.max set by the DAO contract.
+     * uint112 is becoming a more frequently chosen bound by Uniswap and others, and is perfectly functional.
+     * DistributedERC20 is bounded by uint112, hence it is also used here. This also removes the requirement
+     * for the DAO to use uint120.
+     */
     if (totalSupply() > uint256(uint112(type(int112).max))) {
       revert SupplyExceedsInt112(totalSupply(), type(int112).max);
     }
   }
 
+  /// @notice Burn `amount` tokens
+  /// @param amount Amount of new tokens to be burned
+  /// @dev Redefine ERC20 burn function as an override so the DEX can call it
   function burn(uint256 amount) external override {
     _burning = true;
     _burn(msg.sender, amount);
     _burning = false;
   }
 
-  // Helper function which simplifies calling and lets the ILO DEX abstract this away
+  /// @inheritdoc IntegratedLimitOrderDEX
+  /// @dev Helper function to simplify calling and allow IntegratedLimitOrderDEX to abstract this away 
   function frozen(address person) public view override(IFreeze, IntegratedLimitOrderDEX) returns (bool) {
     return block.timestamp <= frozenUntil[person];
   }
 
   function _freeze(address person, uint64 until) private {
-    // If they were already frozen to at least this time, keep the existing value
-    // Prevents multiple freeze triggers from overlapping and reducing the amount of time frozen
+    // If an address is already frozen until the specified time, keep the existing freeze lock in place.
+    // This prevents multiple freezes from overlapping or reducing the freeze time.
     if (frozenUntil[person] >= until) {
       return;
     }
@@ -118,19 +148,24 @@ contract FrabricERC20 is OwnableUpgradeable, PausableUpgradeable, DistributionER
     emit Freeze(person, until);
   }
 
+  /// @notice Freeze tokens on an address (`person`) until a given time (`until`). Only callable by contract owner
+  /// @param person Address to have tokens frozen
+  /// @param until Absolute time in seconds to freeze tokens of `person` until
   function freeze(address person, uint64 until) external override onlyOwner {
     _freeze(person, until);
   }
 
+  /// @notice Trigger an existing freeze on `person` from a parent contract
+  /// @param person Address to have freeze triggered on
   function triggerFreeze(address person) external override {
-    // Doesn't need an address 0 check as it's using supportsInterface
-    // Even if this was address 0 and we somehow got 0 values out of it,
-    // it wouldn't be an issue
+    // supportsInterface removes the need for an address 0 check.
+    // Even if the address was 0 and 0 values were returnd it would not be an issue 
     if (!parent.supportsInterface(type(IFreeze).interfaceId)) {
       return;
     }
     _freeze(person, IFreeze(parent).frozenUntil(person));
   }
+
 
   // Labelled unsafe due to its split checks with triggerRemoval and lack of
   // guarantees on what checks it will perform
@@ -140,15 +175,17 @@ contract FrabricERC20 is OwnableUpgradeable, PausableUpgradeable, DistributionER
       return;
     }
     _setRemoved(person);
-
-    // If we didn't specify a fee, carry the parent's
-   // Checks if it supports IRemovalFee, as that isn't actually a requirement on
-   // parent. Solely IFrabricWhitelistCore is, and doing this check keeps the
-   // parent bounds accordingly minimal and focused. It's also only a minor gas
-   // cost given how infrequent removals are
+  
+    /**
+     * If a fee is not specified, carry the parent fee.
+     * Checks if it supports IRemovalFee, as that is not a requirement on the
+     * parent. Solely IFrabricWhitelistCore is, and doing this check keeps the
+     * parent bounds minmal. Note this is only a minor gas
+     * cost given how infrequent removals are 
+     */
     if (
       (fee == 0) &&
-      // Redundant thanks to supportsInterface
+      // Redundant due to supportsInterface check
       (parent != address(0)) &&
       (parent.supportsInterface(type(IRemovalFee).interfaceId))
     ) {
@@ -157,11 +194,13 @@ contract FrabricERC20 is OwnableUpgradeable, PausableUpgradeable, DistributionER
 
     removalFee[person] = fee;
 
-    // Clear the amount they have locked
-    // If this wasn't cleared, it'd be easier to implement adding people back
-    // The ILO DEX (main source of pollution) would be able to successfully
-    // correct this field as old orders are cleared
-    // There'd still be issues though and this proper
+    /**
+     * Clear the locked amount.
+     * If this was not cleared, it would be easier to implement readding users.
+     * The InegratedLimitOrderDEX would be able to successfully
+     * correct this field as old orders are cleared.
+     * This would cause issues though and the current solution is sufficient
+     */
     locked[person] = 0;
 
     uint256 balance = balanceOf(person);
@@ -196,35 +235,56 @@ contract FrabricERC20 is OwnableUpgradeable, PausableUpgradeable, DistributionER
     }
   }
 
-  // Whitelist functions
+  // Whitelisting functions
+
+  /// @inheritdoc IntegratedLimitOrderDEX
+  /// @dev Redefine function as an override so the DEX can call it
   function whitelisted(
     address person
   ) public view override(IntegratedLimitOrderDEX, FrabricWhitelist, IFrabricWhitelistCore) returns (bool) {
     return super.whitelisted(person);
   }
 
+  /// @inheritdoc IntegratedLimitOrderDEX
+  /// @dev Redefine function as an override so the DEX can call it
   function removed(
     address person
   ) public view override(IntegratedLimitOrderDEX, FrabricWhitelist, IFrabricWhitelistCore) returns (bool) {
     return super.removed(person);
   }
 
+  /// @notice Set new parent contract, only callable by owner
+  /// @param _parent Address of new parent contract
   function setParent(address _parent) external override onlyOwner {
     _setParent(_parent);
   }
 
+  /// @notice Whitelist a new user (`person`), only callable by owner
+  /// @param person Address of new user to be whitelisted
   function whitelist(address person) external override onlyOwner {
     _whitelist(person);
   }
 
+  /**
+   * @notice Set KYC status for a user (`person`), only callable by owner
+   * @param person Address of user (`person`) to have KYC status added
+   * @param hash KYC hash to be stored on chain
+   * @param nonce Number used once for each KYC, to prevent replays
+   */
   function setKYC(address person, bytes32 hash, uint256 nonce) external override onlyOwner {
     _setKYC(person, hash, nonce);
   }
 
-  // nonReentrant would be overkill given onlyOwner except this needs to not be the initial vector
-  // while re-entrancy happens through functions labelled nonReentrant
-  // While the only external calls should be completely in-ecosystem and therefore to trusted code,
-  // _removeUnsafe really isn't the thing to play around with
+  /**
+   * @notice Remove user `person` from the whitelist, only callable by owner
+   * @param person Address of user to be removed
+   * @param fee Fee associated with removal of user `person`
+   * 
+   * nonReentrant modifier here could be considered overkill considering onlyOwner is also user,
+   * except this must not be the initial vector while reentrancy hapens though functions labelled
+   * nonReentrant. While the only external calls should be to trusted code in ecosystem, _removeUnsafe
+   * is not a function to have unprotected in any way.
+   */
   function remove(address person, uint8 fee) external override onlyOwner nonReentrant {
     // This will only apply to the Frabric/Thread in question
     // For a Frabric removal, this will remove them from the global whitelist,
@@ -233,15 +293,17 @@ contract FrabricERC20 is OwnableUpgradeable, PausableUpgradeable, DistributionER
     _removeUnsafe(person, fee);
   }
 
+  /// @notice Trigger a removal on a no-longer whitelisted user `person`
+  /// @param person Address of user to have removal triggered on
   function triggerRemoval(address person) public override nonReentrant {
-    // Check they were actually removed from the whitelist
+    // Check user has been removed from whitelist
     if (whitelisted(person)) {
       revert NotRemoved(person);
     }
 
-    // Check they actually used this contract in some point
-    // If they never held tokens, this could be someone who was never whitelisted
-    // Even if they were at one point, they aren't now, and they have no data to clean up
+    // Check user actually used this contract
+    // If they never held tokens, this could be a user who was never whitelisted
+    // If they were whitelisted in the past, they are not anymore, thus there is no data to clean up
     if (numCheckpoints(person) == 0) {
       revert NothingToRemove(person);
     }
@@ -250,30 +312,34 @@ contract FrabricERC20 is OwnableUpgradeable, PausableUpgradeable, DistributionER
   }
 
   // Pause functions
+
+  /// @notice Check if token trasfers are paused
+  /// @return bool True if the contract is paused, false otherwise
   function paused() public view override(PausableUpgradeable, IFrabricERC20) returns (bool) {
     return super.paused();
   }
+
+  /// @notice Pause token transfer, only callable by owner
   function pause() external override onlyOwner {
     _pause();
   }
 
   // Transfer requirements
+
   function _beforeTokenTransfer(address from, address to, uint256 amount) internal virtual override {
     super._beforeTokenTransfer(from, to, amount);
 
-    // Regarding !_removal, placed here (not just on from) as a gas optimization
+    // !_removal is placed here (not just on from) as a gas optimization
     // The Auction contract transferred to during removals is whitelisted so that
-    // occurs without issue. If it wasn't whitelisted, anyone could call remove
-    // on it, which would be exceptionally problematic (and it couldn't transfer
-    // tokens to auction winners)
+    // occurs without issue. If it wasn't whitelisted, anyone could call remove.
     if ((!_removal) && (!_inDEX)) {
       // Whitelisted from or minting
-      // A non-whitelisted actor may have tokens if they were removed from the whitelist
-      // and remove has yet to be called. That's why this code is inside `if !_removal`
-      // !_inDEX is simply an optimization as the DEX checks traders are whitelisted itself
+      // A non-whitelisted user may have tokens if they were removed from the whitelist
+      // and remove has yet to be called. That's why this code is inside `if !_removal`.
+      // !_inDEX is simply an optimization as the DEX checks users are whitelisted
 
-      // Technically, whitelisted is an interaction, as discussed in IntegratedLimitOrderDEX
-      // As stated there, it's trusted to not be idiotic AND it's view, limiting potential
+      // Technically, whitelisted is an interaction, as discussed in IntegratedLimitOrderDEX.
+      // As stated there, it's trusted to not be idiotic AND it is a view function, limiting potential harm
       if ((!whitelisted(from)) && (from != address(0))) {
         revert NotWhitelisted(from);
       }
@@ -283,8 +349,8 @@ contract FrabricERC20 is OwnableUpgradeable, PausableUpgradeable, DistributionER
       }
 
       // If the person is being removed, or if the DEX is executing a standing order,
-      // this is disregarded. It's only if they're trying to transfer after being frozen
-      // that this should matter (and the DEX ensures they can't place new orders)
+      // this is disregarded. This will only matter in the case a user is attempting to transfer
+      // after being frozen. The DEX ensures they cannot place new orders.
       if (frozen(from)) {
         revert Frozen(from);
       }

@@ -142,7 +142,7 @@ import "../erc20/DistributionERC20.sol";
 
   /// @notice Deposit funds into the Crowdfund
   /// @dev Revert unless the state of the Crowdfund is Active
-  /// @param amount (uint256) Amount to be burned
+  /// @param amount (uint112) Amount to be burned
   /// @return (uint112) Amount deposited
   function deposit(uint112 amount) external override returns (uint112) {
     if (state != State.Active) {
@@ -191,7 +191,7 @@ import "../erc20/DistributionERC20.sol";
 
   /// @notice Enables withdrawing funds before the target is reached
   /// @dev Revert unless the state of the Crowdfund is Active
-  /// @param amount (uint256) Amount to withdraw
+  /// @param amount (uint112) Amount to withdraw
   function withdraw(uint112 amount) external override {
     if (state != State.Active) {
       revert InvalidState(state, State.Active);

@@ -9,29 +9,40 @@ import "../common/Composable.sol";
 
 import "../interfaces/erc20/IDEXRouter.sol";
 
-// The IntegratedLimitOrderDEX has an issue where it can be upgraded with the FrabricERC20 by a Thread
-// This is completely intended behavior
-// The issue is that the UX is expected to offer infinite approvals on each DEX to reduce the number of transactions required
-// If a single Thread goes rogue under this system, it can have the DEX drain user wallets via these approvals
-// To solve this, this DEX router exists. Users approve the DEX router to spend their non-Thread tokens
-// Since this isn't deployed by a proxy, no party can upgrade it to drain wallets
-// Thread tokens are still directly traded via communicating with the Thread contract
-// Order cancellations are still handled via communicating with the Thread contract
-// The Thread can still upgrade to abscond with all coins held in open orders
+/**
+ * The IntegratedLimitOrderDEX contract may be upgraded with the FrabricERC20 contract by a Thread.
+ * While this behaviour is intended, it would enable a rougue Thread to drain user wallets, since they
+ * are expected to enable infinite approvals for UX purposes.
+ * This non-upgradable contract resolves this issue, users need only approve the router to spend their non Frabric tokens.
+ * Frabric tokens are still directly traded via the Thread contract, as are order cancellations.
+ * Threads may still abscond with all tokens held in open orders.
+ * A global DEX not built into each Threads ERC20 token would also be viable, although slash mechanics
+ * are most effective with a built in system.
+ * While Uniswap will be whitelisted, it cannot be used to hold tokens - only to swap or provide liquidity.
+ */
 
-// A global DEX not built into each Thread's ERC20 would also make sense,
-// especially since there's now this global contract, except slash mechanics
-// are most effective when the DEX is built into the ERC20 controlled by the Thread
-// While Uniswap will be whitelisted, it can't be used to effectively hold tokens,
-// only to sell them or provide liquidity (a form of holding yet one requiring equal
-// capital lockup while providing a service others can take advantage of)
-
+/** 
+ * @title DEXRouter contract
+ * @author Fractional Finance
+ * @notice This contract implements the Frabric DEXRouter
+ * @dev Non-upgradable to prevent Threads draining token balances
+ */
 contract DEXRouter is Composable, IDEXRouter {
   constructor() Composable("DEXRouter") initializer {
+    // Set here as final version to prevent upgrades
     __Composable_init("DEXRouter", true);
     supportsInterface[type(IDEXRouter).interfaceId] = true;
   }
 
+  /**
+   * @notice Execute a token swap
+   * @param token Token address to be purchased
+   * @param tradeToken Token address to be sold
+   * @param payment Amount of tradeToken (`tradeToken`) to be sold
+   * @param price Purchase price in whole tokens
+   * @param minimumAmount Minimum amount of tokens (`token`) received (in whole tokens)
+   * @return filled uint256 quantity of succesfully purchased tokens (`token`) 
+   */
   function buy(
     address token,
     address tradeToken,
@@ -39,26 +50,24 @@ contract DEXRouter is Composable, IDEXRouter {
     uint256 price,
     uint256 minimumAmount
   ) external override returns (uint256) {
-    // Doesn't bother checking the supported interfaces to minimize gas usage
-    // If this function executes in its entirety, then the contract has all needed functions
 
-    // Transfer only the specified of capital
-
-    // We could derive tradeToken from IIntegratedLimitOrderDEX(token), yet that opens a frontrunning
-    // attack where a user intending to spend token A ends up spending the much more expensive token B
-    // While this could be the wrong tradeToken, if the contract is honest, the user will receive minimumAmount
-    // no matter what so there's no issue. If it's dishonest, there's already little to be done
-    // The important thing is that the user knows when they make their TX what capital they're putting up
-    // and that is confirmed
-
-    // Doesn't bother with SafeERC20 as the ILODEX will fully validate this transfer as needed
-    // Solely wastes gas to use it here as well
+    /**
+     * Interface support not checked here for gas efficiency. If the function successfully runs,
+     * the contract has all the required functions.
+     * While tradeToken could be inferred from IIntegratedLimitOrderDEX(token), this would make the function
+     * vulnerable to a frontrunning attack where the user spends a different token to the intended one.
+     * SafeERC20 not used as IntegratedLimitOrderDEX will validate the transfer and repeating those checks
+     * here would not be gas efficient.
+     */
     IERC20(tradeToken).transferFrom(msg.sender, token, payment);
 
     return IIntegratedLimitOrderDEX(token).buy(msg.sender, price, minimumAmount);
   }
 
-  // Doesn't have a fund recover function as this should never hold funds
-  // Any recovery function would be a MEV pit unless a specific address received the funds
-  // That would acknowledge a Frabric which is not the intent nor role of this contract
+  /**
+   * No fund recovery function is included as this contract should never hold funds.
+   * A recovery function would act as an MEV pit unless a specific address received the funds,
+   * however this would require the definition of a Frabric address which is not the intention
+   * or intent of this contract.
+   */
 }

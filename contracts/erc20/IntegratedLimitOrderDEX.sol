@@ -14,27 +14,34 @@ import "../interfaces/erc20/IFrabricERC20.sol";
 
 import "../interfaces/erc20/IIntegratedLimitOrderDEX.sol";
 
+/** 
+ * @title IntegratedLimitOrderDEX contract
+ * @author Fractional Finance
+ * @notice This contract implements the IntegratedLimitOrderDex for FrabricERC20
+ * @dev Upgradable contract
+ */
 abstract contract IntegratedLimitOrderDEX is ReentrancyGuardUpgradeable, Composable, IIntegratedLimitOrderDEX {
   using SafeERC20 for IERC20;
 
-  // Token to trade against, presumably a USD stablecoin or WETH
+  /// @notice Token to trade against, presumably a USD stablecoin or WETH
   address public override tradeToken;
-  // Last known balance of the DEX token
+  /// @notice Last known balance of the DEX token
   uint256 public override tradeTokenBalance;
-  // DEX token balances of traders on the DEX
+  /// @notice DEX token balances of traders on the DEX
   mapping(address => uint256) public override tradeTokenBalances;
-
-  // Locked funds of the token this is integrated into
+  /// @notice Locked funds of the token this is integrated into
   mapping(address => uint256) public override locked;
 
   struct OrderStruct {
     address trader;
-    // Right now, we don't allow removed parties to be added back due to leftover
-    // data such as DEX orders. With a versioning system, this could be effectively
-    // handled. While this won't be implemented right now, as it's a pain with a
-    // lot of security considerations not worth handling right now, this does leave
-    // our options open (even though we could probably add it later without issue
-    // as it fits into an existing storage slot)
+    /**
+     * Right now, we don't allow removed parties to be added back due to leftover
+     * data such as DEX orders. With a versioning system, this could be effectively
+     * handled. While this won't be implemented right now, as it's a pain with a
+     * lot of security considerations not worth handling right now, this does leave
+     * our options open (even though we could probably add it later without issue
+     * as it fits into an existing storage slot)
+     */
     uint8 version;
     uint256 amount;
   }
@@ -53,12 +60,31 @@ abstract contract IntegratedLimitOrderDEX is ReentrancyGuardUpgradeable, Composa
   uint256[100] private __gap;
 
   function _transfer(address from, address to, uint256 amount) internal virtual;
+
+  /// @notice Query token balance of an account
+  /// @param account Address to query balance of
+  /// @return uint256 Token balance of `account`
   function balanceOf(address account) public view virtual returns (uint256);
+
+  /// @notice Query decimals of token
+  /// @return uint8 Decimals of token
   function decimals() public view virtual returns (uint8);
 
+  /// @notice Check if tokens owned by address `person` are frozen
+  /// @param person Address to check
+  /// @return bool True if tokens owned by `person` are frozen, false otherwise
   function frozen(address person) public view virtual returns (bool);
+
   function _removeUnsafe(address person, uint8 fee) internal virtual;
+
+  /// @notice Check if a user `person` is currently whitelisted
+  /// @param person Address of user to be checked
+  /// @return bool True is user `person` is whitelisted, false otherwise
   function whitelisted(address person) public view virtual returns (bool);
+
+  /// @notice Check if a user `person` has been removed
+  /// @param person Address of user to be checked
+  /// @return bool True is user `person` has been removed, false otherwise
   function removed(address person) public view virtual returns (bool);
 
   function __IntegratedLimitOrderDEX_init(address _tradeToken) internal onlyInitializing {
@@ -68,7 +94,9 @@ abstract contract IntegratedLimitOrderDEX is ReentrancyGuardUpgradeable, Composa
     tradeToken = _tradeToken;
   }
 
-  // Convert a token quantity to atomic units
+  /// @notice Convert a token quantity to atomic units
+  /// @param amount Amount of full tokens to be converted to atomic units
+  /// @return uint256 Atomic token units
   function atomic(uint256 amount) public view override returns (uint256) {
     return amount * (10 ** decimals());
   }
@@ -90,6 +118,8 @@ abstract contract IntegratedLimitOrderDEX is ReentrancyGuardUpgradeable, Composa
     tradeTokenBalance = IERC20(tradeToken).balanceOf(address(this));
   }
 
+  /// @notice Withdraw trade tokens for user `trader`
+  /// @param trader User to have tokens withdrawn
   function withdrawTradeToken(address trader) external override nonReentrant {
     _withdrawTradeToken(trader);
   }
@@ -198,13 +228,15 @@ abstract contract IntegratedLimitOrderDEX is ReentrancyGuardUpgradeable, Composa
       revert NotWhitelisted(trader);
     }
 
-    // If they're currently frozen, don't let them place new orders
-    // Their existing orders are allowed to stand however
-    // If they were put up for a low value, anyone can snipe them
-    // If they were put up for a high value, no one will bother buying them, and
-    // they'll be removed if the removal proposal passes
-    // If they were put up for their actual value, then this is them leaving the
-    // ecosystem and that's that
+    /**
+     * If they're currently frozen, don't let them place new orders
+     * Their existing orders are allowed to stand however
+     * If they were put up for a low value, anyone can snipe them
+     * If they were put up for a high value, no one will bother buying them, and
+     * they'll be removed if the removal proposal passes
+     * If they were put up for their actual value, then this is them leaving the
+     * ecosystem and that's that
+     */
     if (frozen(trader)) {
       revert Frozen(trader);
     }
@@ -241,10 +273,13 @@ abstract contract IntegratedLimitOrderDEX is ReentrancyGuardUpgradeable, Composa
     return filled;
   }
 
-  // Returns the same as action
-  // Price is per whole token (presumably 1e18 atomic units)
-  // amount is in whole tokens
-  // minimumAmount is in whole tokens
+  /**
+   * @notice Execute a token purchase order
+   * @param trader User executing the trade
+   * @param price Purchase price per whole token (presumably 1e18 atomic units)
+   * @param minimumAmount Minimum amount of tokens received (in whole tokens)
+   * @return filled uint256 quantity of succesfully purchased tokens (in atomic units)
+   */
   function buy(
     address trader,
     uint256 price,
@@ -258,13 +293,15 @@ abstract contract IntegratedLimitOrderDEX is ReentrancyGuardUpgradeable, Composa
 
     // Unfortunately, does not allow buying with the DEX balance as we don't have msg.sender available
     // We could pass and verify a signature. It's just not worth it at this time
-
-    // Supports fee on transfer tokens
-    // The Crowdfund contract actually verifies its token isn't fee on transfer
-    // The Thread initializer uses the same token for both that and this
-    // That said, any token which can have its fee set may be set to 0 during Crowdfund,
-    // allowing it to pass, yet set to non-0 later in its life, causing this to fail
-    // USDT notably has fee on transfer code, currently set to 0, that may someday activate
+  
+    /**
+     * Supports fee on transfer tokens
+     * The Crowdfund contract actually verifies its token isn't fee on transfer
+     * The Thread initializer uses the same token for both that and this
+     * That said, any token which can have its fee set may be set to 0 during Crowdfund,
+     * allowing it to pass, yet set to non-0 later in its life, causing this to fail
+     * USDT notably has fee on transfer code, currently set to 0, that may someday activate
+     */
     uint256 amount = received / price;
     if (amount < minimumAmount) {
       revert LessThanMinimumAmount(amount, minimumAmount);
@@ -284,7 +321,12 @@ abstract contract IntegratedLimitOrderDEX is ReentrancyGuardUpgradeable, Composa
     return _action(OrderType.Buy, OrderType.Sell, trader, price, amount);
   }
 
-  // price and amount is per/in whole tokens
+  /**
+   * @notice Execute a token sell order
+   * @param price Sell price per whole token (presumably 1e18 atomic units)
+   * @param amount Amount of tokens to be sold (in whole tokens)
+   * @return filled uint256 quantity of succesfully sold tokens 
+   */
   function sell(
     uint256 price,
     uint256 amount
@@ -298,6 +340,12 @@ abstract contract IntegratedLimitOrderDEX is ReentrancyGuardUpgradeable, Composa
     _withdrawTradeToken(msg.sender);
   }
 
+  /**
+   * @notice Cancel an existing order of either the caller or a removed user
+   * @param price Price that the order to be cancelled exists at
+   * @param i Index of order at given price point
+   * @return bool True if caller's own order was cancelled, false otherwise
+   */
   function cancelOrder(uint256 price, uint256 i) external override nonReentrant returns (bool) {
     PricePoint storage point = _points[price];
     OrderStruct storage order = point.orders[i];
@@ -348,18 +396,36 @@ abstract contract IntegratedLimitOrderDEX is ReentrancyGuardUpgradeable, Composa
     return ours;
   }
 
+  /// @notice Get the order type at price `price`
+  /// @param price Price at which to retrieve order type
+  /// @return OrderType Type of order at price `price`
   function pointType(uint256 price) external view override returns (OrderType) {
     return _points[price].orderType;
   }
 
+  /// @notice Get the number of orders at price `price`
+  /// @param price Price at which to retrieve order number at
+  /// @return uint256 Current number or orders at price `price`
   function orderQuantity(uint256 price) external view override returns (uint256) {
     return _points[price].orders.length;
   }
 
+  /**
+   * @notice Get address of trader for a given order
+   * @param price Price that the order to be queried exists at
+   * @param i Index of order at given price point
+   * @return address Address of the trader for the given order
+   */
   function orderTrader(uint256 price, uint256 i) external view override returns (address) {
     return _points[price].orders[i].trader;
   }
 
+  /**
+   * @notice Get size of a given order
+   * @param price Price that the order to be queried exists at
+   * @param i Index of order at given price point
+   * @return uint256 Size of queried order (atomic)
+   */
   function orderAmount(uint256 price, uint256 i) external view override returns (uint256) {
     OrderStruct memory order = _points[price].orders[i];
     // The FrabricERC20 whitelisted function will check both whitelisted and removed

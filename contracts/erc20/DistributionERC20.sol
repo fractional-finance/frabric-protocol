@@ -11,25 +11,29 @@ import "../common/Composable.sol";
 
 import "../interfaces/erc20/IDistributionERC20.sol";
 
-// ERC20 Votes expanded with distribution functionality
+/** 
+ * @title DistributionERC20 abstract contract
+ * @author Fractional Finance
+ * @notice This contract expands ERC20Votes with distribution functionality
+ * @dev Upgradable contract
+ */
 abstract contract DistributionERC20 is ReentrancyGuardUpgradeable, ERC20VotesUpgradeable, Composable, IDistributionERC20 {
   using SafeERC20 for IERC20;
 
   struct DistributionStruct {
     address token;
     uint32 block;
-    // 8 bytes left ^
-    // 4 bytes left v
-    uint112 amount; // If Uniswap can do it... also fine for our use case
-    uint112 supply; // Bounds descendants into not minting past uint112
+    // 8 bytes left above
+    // 4 bytes left below
+    uint112 amount;
+    // Restricts descendants to not mint beyond uint112
+    uint112 supply;
   }
-  // This could be an array yet gas testing on an isolate contract showed writing
-  // new structs was roughly 200 gas more expensive while reading to memory was
-  // roughly 2000 gas cheaper
-  // This was including the monotonic uint256 increment
-  // It's also better to use a mapping as we can extend the struct later if needed
+
   uint256 private _nextID;
+  // Mapping chosen over array for gas efficiency and potential for struct extensibility
   mapping(uint256 => DistributionStruct) private _distributions;
+  /// @notice Mapping to keep track of which users have claimed over all distributions
   mapping(uint256 => mapping(address => bool)) public override claimed;
 
   uint256[100] private __gap;
@@ -46,27 +50,28 @@ abstract contract DistributionERC20 is ReentrancyGuardUpgradeable, ERC20VotesUpg
     supportsInterface[type(IDistributionERC20).interfaceId] = true;
   }
 
-  // Doesn't hook into _transfer as _mint doesn't pass through it
+
+  // Does not hook into _transfer as _mint does not pass through it
   function _afterTokenTransfer(address from, address to, uint256 amount) internal virtual override {
     super._afterTokenTransfer(from, to, amount);
-    // Delegate to self to track voting power, if it isn't already tracked
+    // Delegate to self to track voting power, if not already tracked
     if (delegates(to) == address(0x0)) {
       super._delegate(to, to);
     }
   }
 
-  // Disable delegation to enable distributions
-  // Removes the need to track both historical balances AND historical voting power
-  // Also resolves legal liability which is currently not fully explored and may be a concern
-  // While we may want voting delegation in the future, we'd have to duplicate the checkpointing
-  // code now to keep ERC20Votes' private variables for votes as, truly, votes. It's better
-  // to just duplicate it in the future if we need to, which also gives us more control
-  // over the process
+  /**
+   * Disable delegation to enable distributions, removing the need to track
+   * both historic balances and voting power. Also reduces potential legal liability, which
+   * could be a future concern. Vote delegation may be enabled in the future, but it would
+   * require duplication of the checkpointing code to keep voting private varibles in ERC20Votes
+   * as purely votes. It is better to duplicate it in the future if required, retaining
+   * control over the process. 
+   */
   function _delegate(address, address) internal pure override {
     revert Delegation();
   }
 
-  // Distribution implementation
   function _distribute(address token, uint112 amount) internal returns (uint256 id) {
     if (amount == 0) {
       revert ZeroAmount();
@@ -78,29 +83,39 @@ abstract contract DistributionERC20 is ReentrancyGuardUpgradeable, ERC20VotesUpg
       token,
       uint32(block.number - 1),
       amount,
-      // Cache the supply so each claim doesn't have to repeat this binary search
+      // Cache the supply so each claim does not have to repeat this binary search
       uint112(getPastTotalSupply(block.number - 1))
     );
     emit Distribution(id, token, amount);
   }
 
+  /**
+   * @notice Distribute a token
+   * @param token Token address to be distributed
+   * @param amount Amount of tokens (`token`) to be distributed
+   * @return id Id of the distribution in the _distributions mapping
+   */
   function distribute(address token, uint112 amount) public override nonReentrant returns (uint256) {
     uint256 balance = IERC20(token).balanceOf(address(this));
     IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
-    // This does mean USDT distributions could theoretically break at some point
-    // in the future and any automatic flow expecting this to work could break with it
-    // Fee-on-transfer is just incredibly complicated to deal with (as you need to use
-    // a re-entrancy vulnerable balance check) and not easily integrated here. Because
-    // this contract is used as a parent of Crowdfund, if you could re-enter on
-    // this transferFrom call, you could buy Crowdfund tokens with funds then attributed
-    // to this distribution. This either means placing nonReentrant everywhere or just
-    // banning idiotic token designs in places like this
+    /**
+     * Notably, USDT does have a fee-on-transfer propery, albeit set to 0.
+     * In the future, USDT distributions and any downstream flows could break.
+     * Fee-on-transfer tokens are very challenging to integrate as they require a
+     * reentrancy vulnerable balance check. As Crowdfund inherits from this contract,
+     * you could buy crowdfund tokens with funds destined for this distribution. 
+     * This requires reentrancy checks on every function, or banning fee-on-transfer tokens
+     * from the protocol. The latter was chosen here
+     */
     if (IERC20(token).balanceOf(address(this)) != (balance + amount)) {
       revert FeeOnTransfer(token);
     }
     return _distribute(token, amount);
   }
 
+  /// @notice Claim tokens from a distribution
+  /// @param id Id of distribution to be claimed from
+  /// @param person Address of user claiming distributed tokens
   function claim(uint256 id, address person) external override {
     if (claimed[id][person]) {
       revert AlreadyClaimed(id, person);
@@ -108,11 +123,11 @@ abstract contract DistributionERC20 is ReentrancyGuardUpgradeable, ERC20VotesUpg
     claimed[id][person] = true;
 
     DistributionStruct storage distribution = _distributions[id];
-    // Since amount will never exceed distribution.amount, which is a uint112, this is proper
+    // Appropriate as amount will never exceed distribution.amount, which is a uint112
     uint112 amount = uint112(
       uint256(distribution.amount) * getPastVotes(person, distribution.block) / distribution.supply
     );
-    // Also verifies this is an actual distribution and not an unset ID
+    // Also verifies this is a valid distribution rather an unset ID
     if (amount == 0) {
       revert ZeroAmount();
     }
